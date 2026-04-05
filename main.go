@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 )
+
+type frameRenderer func(frameN, frameCount, width, height int, pixels []uint64) error
 
 func main() {
 	if err := run(); err != nil {
@@ -24,7 +27,20 @@ const (
 func run() error {
 	frameCount := flag.Int("fc", 100, "number of frames to generate")
 	fps := flag.Int("fps", 30, "target video fps")
+	rendererName := flag.String("renderer", "mandelbrot", "renderer to use: rgb-squares, plasma, mandelbrot, tunnel")
 	flag.Parse()
+
+	renderers := map[string]frameRenderer{
+		"rgb-squares": renderRgbSquaresFrame,
+		"plasma":      renderPlasmaFrame,
+		"mandelbrot":  renderMandelbrotFrame,
+		"tunnel":      renderTunnelFrame,
+	}
+	renderer, ok := renderers[strings.ToLower(*rendererName)]
+	if !ok {
+		return fmt.Errorf("unsupported renderer %q", *rendererName)
+	}
+
 	const (
 		outputWidth  = 1000
 		outputHeigth = 1000
@@ -33,8 +49,7 @@ func run() error {
 
 	const framePattern = "frames/frame_%d.ppm"
 	for frame := range *frameCount {
-		//err := renderRgbSquaresFrame(frame, *frameCount, outputHeigth, outputHeigth, pixels[:])
-		err := renderPlasmaFrame(frame, *frameCount, outputHeigth, outputHeigth, pixels[:])
+		err := renderer(frame, *frameCount, outputHeigth, outputHeigth, pixels[:])
 		if err != nil {
 			return fmt.Errorf("failed to render frame %d: %w", frame, err)
 		}
@@ -48,7 +63,7 @@ func run() error {
 
 	renderOutputPath := "output.mp4"
 	if err := renderFrames(renderOutputPath, framePattern, *fps); err != nil {
-		return fmt.Errorf("failed to render frames with pattern %s to : %w", framePattern, renderOutputPath, err)
+		return fmt.Errorf("failed to render frames with pattern %s to %s: %w", framePattern, renderOutputPath, err)
 	}
 
 	return nil
@@ -116,6 +131,92 @@ func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint64) e
 		}
 	}
 
+	return nil
+}
+
+func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+	if len(pixels) != height*width {
+		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
+	}
+
+	// Zoom into this interesting point over time
+	centerR, centerI := -0.745, 0.186
+	zoom := math.Pow(0.9, float64(frameN)) // each frame zooms in ~10%
+	maxIter := 100
+
+	for y := range height {
+		for x := range width {
+			// Map pixel to complex plane, centered on our target
+			cr := centerR + (float64(x)/float64(width)*2-1)*zoom*1.5
+			ci := centerI + (float64(y)/float64(height)*2-1)*zoom*1.5
+
+			zr, zi := 0.0, 0.0
+			iter := 0
+			for iter < maxIter {
+				newZr := zr*zr - zi*zi + cr
+				newZi := 2*zr*zi + ci
+				zr, zi = newZr, newZi
+				if zr*zr+zi*zi > 4 {
+					break
+				}
+				iter++
+			}
+
+			t := float64(iter) / float64(maxIter)
+			r := (math.Sin(t*math.Pi*3) + 1) / 2 * 255
+			g := (math.Sin(t*math.Pi*3+2*math.Pi/3) + 1) / 2 * 255
+			b := (math.Sin(t*math.Pi*3+4*math.Pi/3) + 1) / 2 * 255
+			if iter == maxIter {
+				r, g, b = 0, 0, 0 // points inside the set are black
+			}
+
+			i := y*height + x
+			pixels[i] = pixelToRgba(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+		}
+	}
+	return nil
+}
+
+func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+	if len(pixels) != height*width {
+		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
+	}
+
+	t := float64(frameN) / float64(frameCount) * 2 * math.Pi
+
+	for y := range height {
+		for x := range width {
+			// Distance and angle from center
+			dx := float64(x) - float64(width)/2
+			dy := float64(y) - float64(height)/2
+			dist := math.Sqrt(dx*dx + dy*dy)
+			angle := math.Atan2(dy, dx)
+
+			if dist < 1 {
+				dist = 1 // avoid division by zero
+			}
+
+			// Texture coordinates: depth + rotation
+			u := 1.0/dist*float64(width)*0.1 + t
+			v := angle/math.Pi + t*0.3
+
+			// Checkerboard-ish pattern in tunnel space
+			v1 := math.Sin(u*6) * math.Cos(v*6)
+			v2 := math.Sin(u*3+v*5) * 0.5
+
+			val := (v1 + v2 + 1) / 3
+
+			// Fade to black at edges and center for depth feel
+			fade := math.Exp(-dist / float64(width) * 3)
+
+			r := (math.Sin(val*math.Pi*2) + 1) / 2 * 255 * fade
+			g := (math.Sin(val*math.Pi*2+2) + 1) / 2 * 255 * fade
+			b := (math.Sin(val*math.Pi*2+4) + 1) / 2 * 255 * fade
+
+			i := y*height + x
+			pixels[i] = pixelToRgba(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+		}
+	}
 	return nil
 }
 
