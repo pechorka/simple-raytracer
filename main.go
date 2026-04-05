@@ -261,6 +261,20 @@ func writePPM(path string, width, height uint, pixels []uint64) (err error) {
 	return nil
 }
 
+// TODO: Replace ffmpeg rendering with Y4M (YUV4MPEG2) output
+// Header is:
+//    "YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C444\n"
+//    (W=width, H=height, F=fps:1, Ip=progressive, A=square pixels, C444=no chroma subsampling)
+//
+// For each frame:
+//    1. Write "FRAME\n" (literal 6 bytes)
+//    2. Write Y plane: for each pixel in row order, convert RGB to Y and write one byte
+//       Y = clamp(0.299*R + 0.587*G + 0.114*B, 0, 255)
+//    3. Write U plane: same order, one byte per pixel
+//       U = clamp(-0.169*R - 0.331*G + 0.500*B + 128, 0, 255)
+//    4. Write V plane: same order, one byte per pixel
+//       V = clamp(0.500*R - 0.419*G - 0.081*B + 128, 0, 255)
+//    Each plane is width*height bytes. Total per frame: width*height*3 bytes.
 func renderFrames(path, framePattern string, fps int) error {
 	return exec.Command("ffmpeg",
 		"-y", // force file override
