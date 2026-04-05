@@ -2,10 +2,13 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
+	"strconv"
 )
 
 func main() {
@@ -19,16 +22,19 @@ const (
 )
 
 func run() error {
+	frameCount := flag.Int("fc", 100, "number of frames to generate")
+	fps := flag.Int("fps", 30, "target video fps")
+	flag.Parse()
 	const (
 		outputWidth  = 1000
 		outputHeigth = 1000
 	)
 	var pixels [outputWidth * outputHeigth]uint64
 
-	const frameCount = 10
 	const framePattern = "frames/frame_%d.ppm"
-	for frame := range frameCount {
-		err := renderRgbSquaresFrame(frame, outputHeigth, outputHeigth, pixels[:])
+	for frame := range *frameCount {
+		//err := renderRgbSquaresFrame(frame, *frameCount, outputHeigth, outputHeigth, pixels[:])
+		err := renderPlasmaFrame(frame, *frameCount, outputHeigth, outputHeigth, pixels[:])
 		if err != nil {
 			return fmt.Errorf("failed to render frame %d: %w", frame, err)
 		}
@@ -41,14 +47,14 @@ func run() error {
 	}
 
 	renderOutputPath := "output.mp4"
-	if err := renderFrames(renderOutputPath, framePattern); err != nil {
+	if err := renderFrames(renderOutputPath, framePattern, *fps); err != nil {
 		return fmt.Errorf("failed to render frames with pattern %s to : %w", framePattern, renderOutputPath, err)
 	}
 
 	return nil
 }
 
-func renderRgbSquaresFrame(frameN, width, height int, pixels []uint64) error {
+func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint64) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -79,6 +85,34 @@ func renderRgbSquaresFrame(frameN, width, height int, pixels []uint64) error {
 			case 2:
 				pixels[i] = pixelToRgba(0, 0, ppmMaxVal, ppmMaxVal)
 			}
+		}
+	}
+
+	return nil
+}
+
+func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+	if len(pixels) != height*width {
+		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
+	}
+	t := float64(frameN) / float64(frameCount)
+	for y := range height {
+		for x := range width {
+			xf := (float64(x)/float64(width))*2 - 1 // normalize to -1..1
+			yf := (float64(y)/float64(height))*2 - 1
+
+			v1 := math.Sin(xf*10 + t*2*math.Pi)
+			v2 := math.Sin(yf*10 + t*2*math.Pi)
+			v3 := math.Sin((xf+yf)*10 + t*2*math.Pi)
+			v4 := math.Sin(math.Sqrt(xf*xf+yf*yf)*10 - t*2*math.Pi)
+
+			v := (v1 + v2 + v3 + v4) / 4
+			r := (math.Sin(v*math.Pi) + 1) / 2 * 255 // normalize to 0..255
+			g := (math.Sin(v*math.Pi+2*math.Pi/3) + 1) / 2 * 255
+			b := (math.Sin(v*math.Pi+4*math.Pi/3) + 1) / 2 * 255
+
+			i := y*height + x
+			pixels[i] = pixelToRgba(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
 
@@ -126,10 +160,10 @@ func writePPM(path string, width, height uint, pixels []uint64) (err error) {
 	return nil
 }
 
-func renderFrames(path string, framePattern string) error {
+func renderFrames(path, framePattern string, fps int) error {
 	return exec.Command("ffmpeg",
 		"-y", // force file override
-		"-framerate", "5",
+		"-framerate", strconv.Itoa(fps),
 		"-start_number", "0",
 		"-i", framePattern,
 		"-c:v", "libx264",
