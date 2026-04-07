@@ -18,13 +18,25 @@ import (
 	"github.com/pechorka/simple-raytracer/pkg/utils"
 )
 
-type frameRenderer func(frameN, frameCount, width, height int, pixels []uint32) error
+type colorOffset struct {
+	r int
+	g int
+	b int
+}
+
+type colorShiftSpec struct {
+	name      string
+	amplitude int
+}
+
+type frameRenderer func(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error
 
 type videoExporter func(
 	path string,
 	width, height int,
 	frameCount, fps int,
 	frameRenderer frameRenderer,
+	colorShift colorShiftSpec,
 ) error
 
 func main() {
@@ -33,16 +45,21 @@ func main() {
 	}
 }
 
-const (
-	ppmMaxVal = 0xFF
-)
+const ppmMaxVal = 0xFF
 
 func run() error {
 	frameCount := flag.Int("fc", 100, "number of frames to generate")
 	fps := flag.Int("fps", 30, "target video fps")
 	rendererName := flag.String("renderer", "mandelbrot", "renderer to use: rgb-squares, plasma, mandelbrot, tunnel")
 	videoExporterName := flag.String("video-exporter", "ffmpeg", "video-exporter to use: ffmpeg, gif")
+	outputPath := flag.String("out", "", "output file path (optional, defaults to output.<ext> from exporter)")
+	colorShiftRaw := flag.String("color-shift", "none", "time-based color shift mode: none, sine[:amp]")
 	flag.Parse()
+
+	shift, err := parseColorShiftSpec(*colorShiftRaw)
+	if err != nil {
+		return fmt.Errorf("invalid -color-shift %q: %w", *colorShiftRaw, err)
+	}
 
 	renderers := map[string]frameRenderer{
 		"rgb-squares": renderRgbSquaresFrame,
@@ -78,8 +95,14 @@ func run() error {
 		outputHeigth = 1000
 	)
 
-	renderOutputPath := "output." + videoExporterMeta.ext
-	err := videoExporterMeta.exporter(renderOutputPath, outputWidth, outputHeigth, *frameCount, *fps, renderer)
+	renderOutputPath := *outputPath
+	if renderOutputPath == "" {
+		renderOutputPath = "output." + videoExporterMeta.ext
+	} else if filepath.Ext(renderOutputPath) == "" {
+		renderOutputPath = renderOutputPath + "." + videoExporterMeta.ext
+	}
+
+	err = videoExporterMeta.exporter(renderOutputPath, outputWidth, outputHeigth, *frameCount, *fps, renderer, shift)
 	if err != nil {
 		return fmt.Errorf("failed to render frames as gif to %s: %w", renderOutputPath, err)
 	}
@@ -87,7 +110,7 @@ func run() error {
 	return nil
 }
 
-func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint32) error {
+func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -112,11 +135,11 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint3
 			i := y*width + x
 			switch color {
 			case 0:
-				pixels[i] = utils.PixelToRGBA(ppmMaxVal, 0, 0, ppmMaxVal)
+				pixels[i] = applyColorOffset(utils.PixelToRGBA(ppmMaxVal, 0, 0, ppmMaxVal), co)
 			case 1:
-				pixels[i] = utils.PixelToRGBA(0, ppmMaxVal, 0, ppmMaxVal)
+				pixels[i] = applyColorOffset(utils.PixelToRGBA(0, ppmMaxVal, 0, ppmMaxVal), co)
 			case 2:
-				pixels[i] = utils.PixelToRGBA(0, 0, ppmMaxVal, ppmMaxVal)
+				pixels[i] = applyColorOffset(utils.PixelToRGBA(0, 0, ppmMaxVal, ppmMaxVal), co)
 			}
 		}
 	}
@@ -124,7 +147,7 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint3
 	return nil
 }
 
-func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32) error {
+func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -145,14 +168,14 @@ func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32) e
 			b := (math.Sin(v*math.Pi+4*math.Pi/3) + 1) / 2 * 255
 
 			i := y*width + x
-			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+			pixels[i] = applyColorOffset(utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal), co)
 		}
 	}
 
 	return nil
 }
 
-func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint32) error {
+func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -189,13 +212,13 @@ func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint3
 			}
 
 			i := y*width + x
-			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+			pixels[i] = applyColorOffset(utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal), co)
 		}
 	}
 	return nil
 }
 
-func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint32) error {
+func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -232,10 +255,78 @@ func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint32) e
 			b := (math.Sin(val*math.Pi*2+4) + 1) / 2 * 255 * fade
 
 			i := y*width + x
-			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+			pixels[i] = applyColorOffset(utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal), co)
 		}
 	}
 	return nil
+}
+
+func applyColorOffset(pixel uint32, co colorOffset) uint32 {
+	r, g, b, a := utils.RGBAFromPixel(pixel)
+	return utils.PixelToRGBA(
+		clampToUint8(int(r)+co.r),
+		clampToUint8(int(g)+co.g),
+		clampToUint8(int(b)+co.b),
+		a,
+	)
+}
+
+func clampToUint8(v int) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
+func parseColorShiftSpec(value string) (colorShiftSpec, error) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		value = "none"
+	}
+
+	parts := strings.Split(value, ":")
+	mode := parts[0]
+	amp := 80
+	if len(parts) > 2 {
+		return colorShiftSpec{}, fmt.Errorf("too many spec components in %q", value)
+	}
+	if len(parts) == 2 {
+		parsedAmp, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return colorShiftSpec{}, fmt.Errorf("invalid amplitude %q: %w", parts[1], err)
+		}
+		amp = parsedAmp
+	}
+
+	switch mode {
+	case "", "none", "off", "static":
+		return colorShiftSpec{name: "none", amplitude: 0}, nil
+	case "sine", "sin":
+		return colorShiftSpec{name: "sine", amplitude: amp}, nil
+	default:
+		return colorShiftSpec{}, fmt.Errorf("unsupported color shift mode %q", mode)
+	}
+}
+
+func resolveColorOffsetForFrame(shift colorShiftSpec, frameN, frameCount int) colorOffset {
+	if shift.name == "none" || frameCount <= 1 || shift.amplitude == 0 {
+		return colorOffset{}
+	}
+
+	t := float64(frameN) / float64(frameCount-1)
+	switch shift.name {
+	case "sine":
+		return colorOffset{
+			r: int(float64(shift.amplitude) * math.Sin(2*math.Pi*t)),
+			g: int(float64(shift.amplitude) * math.Sin(2*math.Pi*t+2*math.Pi/3)),
+			b: int(float64(shift.amplitude) * math.Sin(2*math.Pi*t+4*math.Pi/3)),
+		}
+	default:
+		return colorOffset{}
+	}
 }
 
 func writePPM(path string, width, height int, pixels []uint32) (err error) {
@@ -291,6 +382,7 @@ func renderFfmpeg(
 	width, height int,
 	frameCount, fps int,
 	frameRenderer frameRenderer,
+	colorShift colorShiftSpec,
 ) error {
 	pixels := make([]uint32, width*height)
 
@@ -302,7 +394,8 @@ func renderFfmpeg(
 
 	framePattern := filepath.Join(framesFolder, "/frame_%d.ppm")
 	for frame := range frameCount {
-		err := frameRenderer(frame, frameCount, width, height, pixels)
+		frameCO := resolveColorOffsetForFrame(colorShift, frame, frameCount)
+		err = frameRenderer(frame, frameCount, width, height, pixels, frameCO)
 		if err != nil {
 			return fmt.Errorf("failed to render frame %d: %w", frame, err)
 		}
@@ -314,7 +407,7 @@ func renderFfmpeg(
 		}
 	}
 
-	err := exec.Command("ffmpeg",
+	err = exec.Command("ffmpeg",
 		"-y", // force file override
 		"-framerate", strconv.Itoa(fps),
 		"-start_number", "0",
@@ -342,6 +435,7 @@ func renderGIF(
 	width, height int,
 	frameCount, fps int,
 	frameRenderer frameRenderer,
+	colorShift colorShiftSpec,
 ) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -365,7 +459,8 @@ func renderGIF(
 	frameDelay := int(100 / fps)
 	for frameN := range frameCount {
 		log.Printf("INFO rendering frame %d\n", frameN)
-		err := frameRenderer(frameN, frameCount, width, height, pixels)
+		frameCO := resolveColorOffsetForFrame(colorShift, frameN, frameCount)
+		err = frameRenderer(frameN, frameCount, width, height, pixels, frameCO)
 		if err != nil {
 			return fmt.Errorf("failed to render frame %d: %w", frameN, err)
 		}
