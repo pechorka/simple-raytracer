@@ -4,15 +4,27 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/gif"
 	"log"
 	"math"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/pechorka/simple-raytracer/pkg/octree"
+	"github.com/pechorka/simple-raytracer/pkg/utils"
 )
 
-type frameRenderer func(frameN, frameCount, width, height int, pixels []uint64) error
+type frameRenderer func(frameN, frameCount, width, height int, pixels []uint32) error
+
+type videoExporter func(
+	path string,
+	width, height int,
+	frameCount, fps int,
+	frameRenderer frameRenderer,
+) error
 
 func main() {
 	if err := run(); err != nil {
@@ -28,6 +40,7 @@ func run() error {
 	frameCount := flag.Int("fc", 100, "number of frames to generate")
 	fps := flag.Int("fps", 30, "target video fps")
 	rendererName := flag.String("renderer", "mandelbrot", "renderer to use: rgb-squares, plasma, mandelbrot, tunnel")
+	videoExporterName := flag.String("video-exporter", "ffmpeg", "video-exporter to use: ffmpeg, gif")
 	flag.Parse()
 
 	renderers := map[string]frameRenderer{
@@ -41,35 +54,39 @@ func run() error {
 		return fmt.Errorf("unsupported renderer %q", *rendererName)
 	}
 
+	videoExporters := map[string]struct {
+		exporter videoExporter
+		ext      string
+	}{
+		"ffmpeg": {
+			exporter: renderFfmpeg,
+			ext:      "mp4",
+		},
+		"gif": {
+			exporter: renderGIF,
+			ext:      "gif",
+		},
+	}
+	videoExporterMeta, ok := videoExporters[strings.ToLower(*videoExporterName)]
+	if !ok {
+		return fmt.Errorf("unsupported video-exporter %q", *videoExporterName)
+	}
+
 	const (
 		outputWidth  = 1000
 		outputHeigth = 1000
 	)
-	var pixels [outputWidth * outputHeigth]uint64
 
-	const framePattern = "frames/frame_%d.ppm"
-	for frame := range *frameCount {
-		err := renderer(frame, *frameCount, outputHeigth, outputHeigth, pixels[:])
-		if err != nil {
-			return fmt.Errorf("failed to render frame %d: %w", frame, err)
-		}
-
-		frameOutputPath := fmt.Sprintf(framePattern, frame)
-		err = writePPM(frameOutputPath, outputWidth, outputHeigth, pixels[:])
-		if err != nil {
-			return fmt.Errorf("failed to write %s: %w", frameOutputPath, err)
-		}
-	}
-
-	renderOutputPath := "output.mp4"
-	if err := renderFrames(renderOutputPath, framePattern, *fps); err != nil {
-		return fmt.Errorf("failed to render frames with pattern %s to %s: %w", framePattern, renderOutputPath, err)
+	renderOutputPath := "output." + videoExporterMeta.ext
+	err := videoExporterMeta.exporter(renderOutputPath, outputWidth, outputHeigth, *frameCount, *fps, renderer)
+	if err != nil {
+		return fmt.Errorf("failed to render frames as gif to %s: %w", renderOutputPath, err)
 	}
 
 	return nil
 }
 
-func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint32) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -94,11 +111,11 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint6
 			i := y*height + x
 			switch color {
 			case 0:
-				pixels[i] = pixelToRgba(ppmMaxVal, 0, 0, ppmMaxVal)
+				pixels[i] = utils.PixelToRGBA(ppmMaxVal, 0, 0, ppmMaxVal)
 			case 1:
-				pixels[i] = pixelToRgba(0, ppmMaxVal, 0, ppmMaxVal)
+				pixels[i] = utils.PixelToRGBA(0, ppmMaxVal, 0, ppmMaxVal)
 			case 2:
-				pixels[i] = pixelToRgba(0, 0, ppmMaxVal, ppmMaxVal)
+				pixels[i] = utils.PixelToRGBA(0, 0, ppmMaxVal, ppmMaxVal)
 			}
 		}
 	}
@@ -106,7 +123,7 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint6
 	return nil
 }
 
-func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -127,14 +144,14 @@ func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint64) e
 			b := (math.Sin(v*math.Pi+4*math.Pi/3) + 1) / 2 * 255
 
 			i := y*height + x
-			pixels[i] = pixelToRgba(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
 
 	return nil
 }
 
-func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint32) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -171,13 +188,13 @@ func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint6
 			}
 
 			i := y*height + x
-			pixels[i] = pixelToRgba(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
 	return nil
 }
 
-func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint64) error {
+func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint32) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -214,21 +231,13 @@ func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint64) e
 			b := (math.Sin(val*math.Pi*2+4) + 1) / 2 * 255 * fade
 
 			i := y*height + x
-			pixels[i] = pixelToRgba(uint8(r), uint8(g), uint8(b), ppmMaxVal)
+			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
 	return nil
 }
 
-func pixelToRgba(r, g, b, a uint8) uint64 {
-	return uint64(r)<<(8*0) | uint64(g)<<(8*1) | uint64(b)<<(8*2) | uint64(a)<<(8*3)
-}
-
-func rgbaFromPixel(p uint64) (r, g, b, a uint8) {
-	return uint8(p >> (8 * 0)), uint8(p >> (8 * 1)), uint8(p >> (8 * 2)), uint8(p >> (8 * 3))
-}
-
-func writePPM(path string, width, height uint, pixels []uint64) (err error) {
+func writePPM(path string, width, height int, pixels []uint32) (err error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("failed to open file %q: %w", path, err)
@@ -249,7 +258,7 @@ func writePPM(path string, width, height uint, pixels []uint64) (err error) {
 
 	pixelBytes := make([]byte, 0, len(pixels)*3)
 	for _, p := range pixels {
-		r, g, b, _ := rgbaFromPixel(p)
+		r, g, b, _ := utils.RGBAFromPixel(p)
 		pixelBytes = append(pixelBytes, r, g, b)
 	}
 
@@ -263,19 +272,41 @@ func writePPM(path string, width, height uint, pixels []uint64) (err error) {
 
 // TODO: Replace ffmpeg rendering with Y4M (YUV4MPEG2) output
 // Header is:
-//    "YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C444\n"
-//    (W=width, H=height, F=fps:1, Ip=progressive, A=square pixels, C444=no chroma subsampling)
+//
+//	"YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C444\n"
+//	(W=width, H=height, F=fps:1, Ip=progressive, A=square pixels, C444=no chroma subsampling)
 //
 // For each frame:
-//    1. Write "FRAME\n" (literal 6 bytes)
-//    2. Write Y plane: for each pixel in row order, convert RGB to Y and write one byte
-//       Y = clamp(0.299*R + 0.587*G + 0.114*B, 0, 255)
-//    3. Write U plane: same order, one byte per pixel
-//       U = clamp(-0.169*R - 0.331*G + 0.500*B + 128, 0, 255)
-//    4. Write V plane: same order, one byte per pixel
-//       V = clamp(0.500*R - 0.419*G - 0.081*B + 128, 0, 255)
-//    Each plane is width*height bytes. Total per frame: width*height*3 bytes.
-func renderFrames(path, framePattern string, fps int) error {
+//  1. Write "FRAME\n" (literal 6 bytes)
+//  2. Write Y plane: for each pixel in row order, convert RGB to Y and write one byte
+//     Y = clamp(0.299*R + 0.587*G + 0.114*B, 0, 255)
+//  3. Write U plane: same order, one byte per pixel
+//     U = clamp(-0.169*R - 0.331*G + 0.500*B + 128, 0, 255)
+//  4. Write V plane: same order, one byte per pixel
+//     V = clamp(0.500*R - 0.419*G - 0.081*B + 128, 0, 255)
+//     Each plane is width*height bytes. Total per frame: width*height*3 bytes.
+func renderFfmpeg(
+	path string,
+	width, height int,
+	frameCount, fps int,
+	frameRenderer frameRenderer,
+) error {
+	pixels := make([]uint32, width*height)
+
+	const framePattern = "frames/frame_%d.ppm"
+	for frame := range frameCount {
+		err := frameRenderer(frame, frameCount, width, height, pixels)
+		if err != nil {
+			return fmt.Errorf("failed to render frame %d: %w", frame, err)
+		}
+
+		frameOutputPath := fmt.Sprintf(framePattern, frame)
+		err = writePPM(frameOutputPath, width, height, pixels[:])
+		if err != nil {
+			return fmt.Errorf("failed to write %s: %w", frameOutputPath, err)
+		}
+	}
+
 	return exec.Command("ffmpeg",
 		"-y", // force file override
 		"-framerate", strconv.Itoa(fps),
@@ -285,4 +316,61 @@ func renderFrames(path, framePattern string, fps int) error {
 		"-pix_fmt", "yuv420p",
 		path,
 	).Run()
+}
+
+func renderGIF(
+	path string,
+	width, height int,
+	frameCount, fps int,
+	frameRenderer frameRenderer,
+) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to open file %q: %w", path, err)
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close file %s: %w", path, cerr))
+		}
+	}()
+
+	pixels := make([]uint32, width*height)
+
+	res := gif.GIF{}
+	frameRect := image.Rectangle{
+		Max: image.Point{
+			X: width,
+			Y: height,
+		},
+	}
+	frameDelay := int(100 / fps)
+	for frameN := range frameCount {
+		log.Printf("INFO rendering frame %d\n", frameN)
+		err := frameRenderer(frameN, frameCount, width, height, pixels)
+		if err != nil {
+			return fmt.Errorf("failed to render frame %d: %w", frameN, err)
+		}
+
+		root := octree.NewRoot()
+
+		for i, p := range pixels {
+			if err := root.Insert(p, i); err != nil {
+				return fmt.Errorf("failed to insert pixel %d into octree: %w", i, err)
+			}
+		}
+
+		frame, err := root.ToImage(frameRect)
+		if err != nil {
+			return fmt.Errorf("failed to convert octree to frame %d: %w", frameN, err)
+		}
+		res.Image = append(res.Image, frame)
+		res.Delay = append(res.Delay, frameDelay)
+	}
+
+	err = gif.EncodeAll(f, &res)
+	if err != nil {
+		return fmt.Errorf("failed to encode gif: %w", err)
+	}
+
+	return nil
 }
