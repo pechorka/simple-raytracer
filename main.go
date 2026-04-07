@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -293,7 +294,13 @@ func renderFfmpeg(
 ) error {
 	pixels := make([]uint32, width*height)
 
-	const framePattern = "frames/frame_%d.ppm"
+	const framesFolder = "frames"
+	err := os.MkdirAll(framesFolder, os.ModePerm)
+		if err != nil {
+			return fmt.Errorf("failed to create folder for frames %q: %w", framesFolder, err)
+		}
+
+	framePattern := filepath.Join(framesFolder, "/frame_%d.ppm")
 	for frame := range frameCount {
 		err := frameRenderer(frame, frameCount, width, height, pixels)
 		if err != nil {
@@ -307,7 +314,7 @@ func renderFfmpeg(
 		}
 	}
 
-	return exec.Command("ffmpeg",
+	err := exec.Command("ffmpeg",
 		"-y", // force file override
 		"-framerate", strconv.Itoa(fps),
 		"-start_number", "0",
@@ -316,6 +323,18 @@ func renderFfmpeg(
 		"-pix_fmt", "yuv420p",
 		path,
 	).Run()
+	if err != nil {
+		return fmt.Errorf(
+			"failed to render ppms with ffmpeg in to %q (ppms are left available for inspection in %q): %w",
+			path, framesFolder, err,
+		)
+	}
+
+	if err := os.RemoveAll(framesFolder); err != nil {
+		return fmt.Errorf("failed to cleanup frames from folder %s: %w", framesFolder, err)
+	}
+
+	return nil
 }
 
 func renderGIF(
