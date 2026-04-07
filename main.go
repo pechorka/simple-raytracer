@@ -99,7 +99,7 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint3
 	color := frameN % colorCount
 	for y := range height {
 		if y > squareHeightEnd {
-			squareHeightEnd += squareWidth
+			squareHeightEnd += squareHeight
 			color = (color + 1) % colorCount
 		}
 		squareWidthEnd := squareWidth
@@ -108,7 +108,7 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint3
 				squareWidthEnd += squareWidth
 				color = (color + 1) % colorCount
 			}
-			i := y*height + x
+			i := y*width + x
 			switch color {
 			case 0:
 				pixels[i] = utils.PixelToRGBA(ppmMaxVal, 0, 0, ppmMaxVal)
@@ -143,7 +143,7 @@ func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32) e
 			g := (math.Sin(v*math.Pi+2*math.Pi/3) + 1) / 2 * 255
 			b := (math.Sin(v*math.Pi+4*math.Pi/3) + 1) / 2 * 255
 
-			i := y*height + x
+			i := y*width + x
 			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
@@ -187,7 +187,7 @@ func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint3
 				r, g, b = 0, 0, 0 // points inside the set are black
 			}
 
-			i := y*height + x
+			i := y*width + x
 			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
@@ -230,7 +230,7 @@ func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint32) e
 			g := (math.Sin(val*math.Pi*2+2) + 1) / 2 * 255 * fade
 			b := (math.Sin(val*math.Pi*2+4) + 1) / 2 * 255 * fade
 
-			i := y*height + x
+			i := y*width + x
 			pixels[i] = utils.PixelToRGBA(uint8(r), uint8(g), uint8(b), ppmMaxVal)
 		}
 	}
