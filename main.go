@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/pechorka/simple-raytracer/pkg/octree"
@@ -34,12 +35,13 @@ type colorShiftSpec struct {
 	amplitude int
 }
 
-type frameRenderer func(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error
+type frameRenderer func(elapsed float64, width, height int, pixels []uint32, co colorOffset) error
 
 type videoExporter func(
 	path string,
 	width, height int,
-	frameCount, fps int,
+	fps int,
+	duration time.Duration,
 	frameRenderer frameRenderer,
 	colorShift colorShiftSpec,
 ) error
@@ -53,8 +55,10 @@ func main() {
 const ppmMaxVal = 0xFF
 
 func run() error {
-	frameCount := flag.Int("fc", 100, "number of frames to generate")
+	duration := flag.Int("ds", 5, "duration in seconds")
 	fps := flag.Int("fps", 30, "target video fps")
+	w := flag.Int("w", 320, "target width")
+	h := flag.Int("h", 320, "target height")
 	rendererName := flag.String("renderer", "mandelbrot", "renderer to use: rgb-squares, plasma, mandelbrot, tunnel")
 	videoExporterName := flag.String("video-exporter", "ffmpeg", "video-exporter to use: ffmpeg, gif")
 	outputPath := flag.String("out", "", "output file path (optional, defaults to output.<ext> from exporter)")
@@ -68,9 +72,9 @@ func run() error {
 
 	renderers := map[string]frameRenderer{
 		"rgb-squares": renderRgbSquaresFrame,
-		"plasma":      renderPlasmaFrame,
+		"plasma": renderPlasmaFrame,
 		"mandelbrot":  renderMandelbrotFrame,
-		"tunnel":      renderTunnelFrame,
+		"tunnel": renderTunnelFrame,
 	}
 	renderer, ok := renderers[strings.ToLower(*rendererName)]
 	if !ok {
@@ -101,11 +105,6 @@ func run() error {
 		return fmt.Errorf("unsupported video-exporter %q", *videoExporterName)
 	}
 
-	const (
-		outputWidth  = 1000
-		outputHeigth = 1000
-	)
-
 	renderOutputPath := *outputPath
 	if renderOutputPath == "" {
 		renderOutputPath = "output." + videoExporterMeta.ext
@@ -113,7 +112,7 @@ func run() error {
 		renderOutputPath = renderOutputPath + "." + videoExporterMeta.ext
 	}
 
-	err = videoExporterMeta.exporter(renderOutputPath, outputWidth, outputHeigth, *frameCount, *fps, renderer, shift)
+	err = videoExporterMeta.exporter(renderOutputPath, *w, *h, *fps, time.Duration(*duration)*time.Second, renderer, shift)
 	if err != nil {
 		return fmt.Errorf("failed to render frames as gif to %s: %w", renderOutputPath, err)
 	}
@@ -121,7 +120,7 @@ func run() error {
 	return nil
 }
 
-func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
+func renderRgbSquaresFrame(elapsed float64, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
@@ -131,7 +130,7 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint3
 
 	squareHeightEnd := squareHeight
 	const colorCount = 3
-	color := frameN % colorCount
+	color := int(elapsed) % colorCount
 	for y := range height {
 		if y > squareHeightEnd {
 			squareHeightEnd += squareHeight
@@ -158,11 +157,11 @@ func renderRgbSquaresFrame(frameN, frameCount, width, height int, pixels []uint3
 	return nil
 }
 
-func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
+func renderPlasmaFrame(elapsed float64, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
-	t := float64(frameN) / float64(frameCount)
+	t := elapsed
 	for y := range height {
 		for x := range width {
 			xf := (float64(x)/float64(width))*2 - 1 // normalize to -1..1
@@ -186,14 +185,14 @@ func renderPlasmaFrame(frameN, frameCount, width, height int, pixels []uint32, c
 	return nil
 }
 
-func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
+func renderMandelbrotFrame(elapsed float64, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
 
 	// Zoom into this interesting point over time
 	centerR, centerI := -0.745, 0.186
-	zoom := math.Pow(0.9, float64(frameN)) // each frame zooms in ~10%
+	zoom := math.Pow(0.9, 5*elapsed) // each frame zooms 
 	maxIter := 100
 
 	for y := range height {
@@ -229,12 +228,12 @@ func renderMandelbrotFrame(frameN, frameCount, width, height int, pixels []uint3
 	return nil
 }
 
-func renderTunnelFrame(frameN, frameCount, width, height int, pixels []uint32, co colorOffset) error {
+func renderTunnelFrame(elapsed float64, width, height int, pixels []uint32, co colorOffset) error {
 	if len(pixels) != height*width {
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), height*width)
 	}
 
-	t := float64(frameN) / float64(frameCount) * 2 * math.Pi
+	t := elapsed * 2 * math.Pi
 
 	for y := range height {
 		for x := range width {
@@ -322,18 +321,17 @@ func parseColorShiftSpec(value string) (colorShiftSpec, error) {
 	}
 }
 
-func resolveColorOffsetForFrame(shift colorShiftSpec, frameN, frameCount int) colorOffset {
-	if shift.name == "none" || frameCount <= 1 || shift.amplitude == 0 {
+func resolveColorOffsetForFrame(shift colorShiftSpec, elapsed float64) colorOffset {
+	if shift.name == "none" || shift.amplitude == 0 {
 		return colorOffset{}
 	}
 
-	t := float64(frameN) / float64(frameCount-1)
 	switch shift.name {
 	case "sine":
 		return colorOffset{
-			r: int(float64(shift.amplitude) * math.Sin(2*math.Pi*t)),
-			g: int(float64(shift.amplitude) * math.Sin(2*math.Pi*t+2*math.Pi/3)),
-			b: int(float64(shift.amplitude) * math.Sin(2*math.Pi*t+4*math.Pi/3)),
+			r: int(float64(shift.amplitude) * math.Sin(2*math.Pi*elapsed)),
+			g: int(float64(shift.amplitude) * math.Sin(2*math.Pi*elapsed+2*math.Pi/3)),
+			b: int(float64(shift.amplitude) * math.Sin(2*math.Pi*elapsed+4*math.Pi/3)),
 		}
 	default:
 		return colorOffset{}
@@ -391,7 +389,8 @@ func writePPM(path string, width, height int, pixels []uint32) (err error) {
 func renderFfmpeg(
 	path string,
 	width, height int,
-	frameCount, fps int,
+	fps int,
+	duration time.Duration,
 	frameRenderer frameRenderer,
 	colorShift colorShiftSpec,
 ) error {
@@ -403,10 +402,12 @@ func renderFfmpeg(
 		return fmt.Errorf("failed to create folder for frames %q: %w", framesFolder, err)
 	}
 
+	frameCount := int(duration.Seconds()) * fps
 	framePattern := filepath.Join(framesFolder, "/frame_%d.ppm")
 	for frame := range frameCount {
-		frameCO := resolveColorOffsetForFrame(colorShift, frame, frameCount)
-		err = frameRenderer(frame, frameCount, width, height, pixels, frameCO)
+		elapsed := float64(frame) / float64(fps)
+		frameCO := resolveColorOffsetForFrame(colorShift, elapsed)
+		err = frameRenderer(elapsed, width, height, pixels, frameCO)
 		if err != nil {
 			return fmt.Errorf("failed to render frame %d: %w", frame, err)
 		}
@@ -444,7 +445,8 @@ func renderFfmpeg(
 func renderGIF(
 	path string,
 	width, height int,
-	frameCount, fps int,
+	fps int,
+	duration time.Duration,
 	frameRenderer frameRenderer,
 	colorShift colorShiftSpec,
 ) error {
@@ -467,11 +469,13 @@ func renderGIF(
 			Y: height,
 		},
 	}
+	frameCount := int(duration.Seconds()) * fps
 	frameDelay := int(100 / fps)
 	for frameN := range frameCount {
 		log.Printf("INFO rendering frame %d\n", frameN)
-		frameCO := resolveColorOffsetForFrame(colorShift, frameN, frameCount)
-		err = frameRenderer(frameN, frameCount, width, height, pixels, frameCO)
+		elapsed := float64(frameN) / float64(fps)
+		frameCO := resolveColorOffsetForFrame(colorShift, elapsed)
+		err = frameRenderer(elapsed, width, height, pixels, frameCO)
 		if err != nil {
 			return fmt.Errorf("failed to render frame %d: %w", frameN, err)
 		}
@@ -503,7 +507,8 @@ func renderGIF(
 func renderToMPV(
 	path string,
 	width, height int,
-	frameCount, fps int,
+	fps int,
+	duration time.Duration,
 	frameRenderer frameRenderer,
 	colorShift colorShiftSpec,
 ) error {
@@ -527,9 +532,11 @@ func renderToMPV(
 	pixels := make([]uint32, width*height)
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&pixels[0])), len(pixels)*4)
 
+	frameCount := int(duration.Seconds()) * fps
 	for frameN := range frameCount {
-		frameCO := resolveColorOffsetForFrame(colorShift, frameN, frameCount)
-		err := frameRenderer(frameN, frameCount, width, height, pixels, frameCO)
+		elapsed := float64(frameN) / float64(fps)
+		frameCO := resolveColorOffsetForFrame(colorShift, elapsed)
+		err := frameRenderer(elapsed, width, height, pixels, frameCO)
 		if err != nil {
 			return fmt.Errorf("failed to render frame : %w", err)
 		}
@@ -550,7 +557,8 @@ func renderToMPV(
 func renderToRaylib(
 	path string,
 	width, height int,
-	frameCount, fps int,
+	fps int,
+	duration time.Duration,
 	frameRenderer frameRenderer,
 	colorShift colorShiftSpec,
 ) error {
@@ -565,9 +573,9 @@ func renderToRaylib(
 	texture := rl.LoadTextureFromImage(img)
 
 	frameN := 0
-	for !rl.WindowShouldClose() && frameN < frameCount {
-		frameCO := resolveColorOffsetForFrame(colorShift, frameN, frameCount)
-		err := frameRenderer(frameN, frameCount, width, height, pixels, frameCO)
+	for !rl.WindowShouldClose() && rl.GetTime() < duration.Seconds() {
+		frameCO := resolveColorOffsetForFrame(colorShift, rl.GetTime())
+		err := frameRenderer(rl.GetTime(), width, height, pixels, frameCO)
 		if err != nil {
 			return fmt.Errorf("failed to render frame : %w", err)
 		}
@@ -577,6 +585,7 @@ func renderToRaylib(
 
 		rl.BeginDrawing()
 		rl.DrawTexture(texture, 0, 0, rl.White)
+		rl.DrawFPS(30, 30)
 		rl.EndDrawing()
 	}
 	rl.UnloadTexture(texture)
