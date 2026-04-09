@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -13,9 +15,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/pechorka/simple-raytracer/pkg/octree"
 	"github.com/pechorka/simple-raytracer/pkg/utils"
+
+	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
 type colorOffset struct {
@@ -83,6 +88,12 @@ func run() error {
 		"gif": {
 			exporter: renderGIF,
 			ext:      "gif",
+		},
+		"mpv": {
+			exporter: renderToMPV,
+		},
+		"raylib": {
+			exporter: renderToRaylib,
 		},
 	}
 	videoExporterMeta, ok := videoExporters[strings.ToLower(*videoExporterName)]
@@ -388,9 +399,9 @@ func renderFfmpeg(
 
 	const framesFolder = "frames"
 	err := os.MkdirAll(framesFolder, os.ModePerm)
-		if err != nil {
-			return fmt.Errorf("failed to create folder for frames %q: %w", framesFolder, err)
-		}
+	if err != nil {
+		return fmt.Errorf("failed to create folder for frames %q: %w", framesFolder, err)
+	}
 
 	framePattern := filepath.Join(framesFolder, "/frame_%d.ppm")
 	for frame := range frameCount {
@@ -485,6 +496,91 @@ func renderGIF(
 	if err != nil {
 		return fmt.Errorf("failed to encode gif: %w", err)
 	}
+
+	return nil
+}
+
+func renderToMPV(
+	path string,
+	width, height int,
+	frameCount, fps int,
+	frameRenderer frameRenderer,
+	colorShift colorShiftSpec,
+) error {
+	pr, pw := io.Pipe()
+
+	cmd := exec.Command("mpv",
+		"--no-cache",
+		"--demuxer=rawvideo",
+		"--demuxer-rawvideo-w="+fmt.Sprint(width),
+		"--demuxer-rawvideo-h="+fmt.Sprint(height),
+		"--demuxer-rawvideo-mp-format=rgb0",
+		"--demuxer-rawvideo-fps=30",
+		"-",
+	)
+	cmd.Stdin = pr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start mpv : %w", err)
+	}
+
+	pixels := make([]uint32, width*height)
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(&pixels[0])), len(pixels)*4)
+
+	for frameN := range frameCount {
+		frameCO := resolveColorOffsetForFrame(colorShift, frameN, frameCount)
+		err := frameRenderer(frameN, frameCount, width, height, pixels, frameCO)
+		if err != nil {
+			return fmt.Errorf("failed to render frame : %w", err)
+		}
+		_, err = pw.Write(buf)
+		if err != nil {
+			return fmt.Errorf("failed to write buffer: %w", err)
+		}
+	}
+	if err := pw.Close(); err != nil {
+		return fmt.Errorf("failed to close pipe writer: %w", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for mpv: %w", err)
+	}
+	return nil
+}
+
+func renderToRaylib(
+	path string,
+	width, height int,
+	frameCount, fps int,
+	frameRenderer frameRenderer,
+	colorShift colorShiftSpec,
+) error {
+	pixels := make([]uint32, width*height)
+	pixelsRaylib := unsafe.Slice((*color.RGBA)(unsafe.Pointer(&pixels[0])), len(pixels))
+
+	rl.InitWindow(int32(width), int32(height), "pixels")
+	defer rl.CloseWindow()
+	rl.SetTargetFPS(int32(fps))
+
+	img := rl.GenImageColor(int(width), int(height), rl.Black)
+	texture := rl.LoadTextureFromImage(img)
+
+	frameN := 0
+	for !rl.WindowShouldClose() && frameN < frameCount {
+		frameCO := resolveColorOffsetForFrame(colorShift, frameN, frameCount)
+		err := frameRenderer(frameN, frameCount, width, height, pixels, frameCO)
+		if err != nil {
+			return fmt.Errorf("failed to render frame : %w", err)
+		}
+		frameN++
+
+		rl.UpdateTexture(texture, pixelsRaylib)
+
+		rl.BeginDrawing()
+		rl.DrawTexture(texture, 0, 0, rl.White)
+		rl.EndDrawing()
+	}
+	rl.UnloadTexture(texture)
+	rl.UnloadImage(img)
 
 	return nil
 }
