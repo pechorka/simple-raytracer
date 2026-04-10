@@ -277,18 +277,33 @@ func renderSphere(elapsed float64, w, h int, pixels []uint32, co colorOffset) er
 		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), h*w)
 	}
 
-	origin := rl.Vector3{
-	}
+	origin := rl.Vector3{}
 
 	sc := rl.Vector3{
-		X: 0.5,
-		Y: 0.5,
+		X: 0,
+		Y: 0,
 		Z: 1,
 	}
 	sr := float32(0.3)
 
+	// light position
+	lp := rl.Vector3{
+		X: sc.X + sr*float32(math.Cos(elapsed)),
+		Y: sc.Y + sr*float32(math.Cos(elapsed)),
+		Z: 0.3,
+	}
+
 	v3sub := rl.Vector3Subtract
 	v3dot := rl.Vector3DotProduct
+	v3add := rl.Vector3Add
+	v3scale := rl.Vector3Scale
+	v3norm := rl.Vector3Normalize
+	v3len := rl.Vector3Length
+	v3unit := func(v rl.Vector3) rl.Vector3 {
+		return v3scale(v, 1/v3len(v))
+	}
+
+	aspect := float32(w) / float32(h)
 
 	for y := range h {
 		for x := range w {
@@ -298,7 +313,7 @@ func renderSphere(elapsed float64, w, h int, pixels []uint32, co colorOffset) er
 			u := (float32(x)/float32(w))*2 - 1
 			v := (float32(y)/float32(h))*2 - 1
 			point := rl.Vector3{
-				X: u,
+				X: u * aspect,
 				Y: -v,
 				Z: 1,
 			}
@@ -331,7 +346,15 @@ func renderSphere(elapsed float64, w, h int, pixels []uint32, co colorOffset) er
 				t = t2
 			}
 
-			pixels[i] = utils.PixelToRGBA(clampToUint8(int(100*t)), 0, 0, ppmMaxVal)
+			hitPoint := v3add(origin, v3scale(dir, t))
+
+			surfaceNormal := v3norm(v3sub(hitPoint, sc))
+
+			toLight := v3sub(lp, hitPoint)
+			l := v3unit(toLight)
+
+			r := clampToUint8(int(200 * max(0, v3dot(surfaceNormal, l))))
+			pixels[i] = utils.PixelToRGBA(r, 0, 0, ppmMaxVal)
 		}
 	}
 	return nil
