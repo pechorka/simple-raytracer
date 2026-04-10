@@ -72,9 +72,10 @@ func run() error {
 
 	renderers := map[string]frameRenderer{
 		"rgb-squares": renderRgbSquaresFrame,
-		"plasma": renderPlasmaFrame,
+		"plasma":      renderPlasmaFrame,
 		"mandelbrot":  renderMandelbrotFrame,
-		"tunnel": renderTunnelFrame,
+		"tunnel":      renderTunnelFrame,
+		"sphere":      renderSphere,
 	}
 	renderer, ok := renderers[strings.ToLower(*rendererName)]
 	if !ok {
@@ -192,7 +193,7 @@ func renderMandelbrotFrame(elapsed float64, width, height int, pixels []uint32, 
 
 	// Zoom into this interesting point over time
 	centerR, centerI := -0.745, 0.186
-	zoom := math.Pow(0.9, 5*elapsed) // each frame zooms 
+	zoom := math.Pow(0.9, 5*elapsed) // each frame zooms
 	maxIter := 100
 
 	for y := range height {
@@ -269,6 +270,75 @@ func renderTunnelFrame(elapsed float64, width, height int, pixels []uint32, co c
 		}
 	}
 	return nil
+}
+
+func renderSphere(elapsed float64, w, h int, pixels []uint32, co colorOffset) error {
+	if len(pixels) != h*w {
+		return fmt.Errorf("pixels buffer has len %d, but expect to have %d", len(pixels), h*w)
+	}
+
+	origin := rl.Vector3{
+	}
+
+	sc := rl.Vector3{
+		X: 0.5,
+		Y: 0.5,
+		Z: 1,
+	}
+	sr := float32(0.3)
+
+	v3sub := rl.Vector3Subtract
+	v3dot := rl.Vector3DotProduct
+
+	for y := range h {
+		for x := range w {
+			i := y*w + x
+			pixels[i] = utils.PixelToRGBA(0, 0, 0, ppmMaxVal)
+
+			u := (float32(x)/float32(w))*2 - 1
+			v := (float32(y)/float32(h))*2 - 1
+			point := rl.Vector3{
+				X: u,
+				Y: -v,
+				Z: 1,
+			}
+
+			dir := v3sub(point, origin)
+
+			// oc := origin-C
+			oc := v3sub(origin, sc)
+
+			// a := dir^2
+			a := v3dot(dir, dir)
+			// b := 2*dir*(origin-C)
+			b := 2 * v3dot(dir, oc)
+			// c := (origin - C)·(origin - C) - r^2
+			c := v3dot(oc, oc) - sr*sr
+
+			d := b*b - 4*a*c
+			if d <= 0 {
+				continue
+			}
+
+			t1 := (-b - sqrt(d)) / (2 * a)
+			t2 := (-b + sqrt(d)) / (2 * a)
+			if t1 <= 0 && t2 <= 0 {
+				continue
+			}
+
+			t := t1
+			if t <= 0 || t > t2 {
+				t = t2
+			}
+
+			pixels[i] = utils.PixelToRGBA(clampToUint8(int(100*t)), 0, 0, ppmMaxVal)
+		}
+	}
+	return nil
+}
+
+func sqrt(d float32) float32 {
+	return float32(math.Sqrt(float64(d)))
 }
 
 func applyColorOffset(pixel uint32, co colorOffset) uint32 {
