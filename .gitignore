@@ -1,3 +1,4 @@
 *.ppm
 *.mp4
 *.gif
+/target
